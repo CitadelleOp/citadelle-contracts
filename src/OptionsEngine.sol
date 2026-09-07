@@ -11,15 +11,15 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 
 // Interfaces
 interface ICitadelleVault {
-    function lockMargin(address user, uint256 amount) external;
-    function unlockMargin(address user, uint256 amount) external;
+    function lockMargin(address user, address token, uint256 amount) external;
+    function unlockMargin(address user, address token, uint256 amount) external;
     function treasury() external view returns (address);
-    function usdc() external view returns (IERC20);
+    function supportedTokens(address token) external view returns (bool);
 }
 
 /**
  * @title OptionsEngine
- * @dev Core engine for Citadelle Options (European Call/Put).
+ * @dev Core engine for Citadelle Options (Multi-Collateral).
  */
 contract OptionsEngine is 
     Initializable, 
@@ -37,8 +37,8 @@ contract OptionsEngine is
     uint256 public constant BPS_DENOMINATOR = 10000;
 
     // --- Events ---
-    event OptionWritten(address indexed writer, string marketSymbol, uint256 strikePrice, uint256 premium);
-    event OptionBought(address indexed buyer, string marketSymbol, uint256 strikePrice, uint256 premium);
+    event OptionWritten(address indexed writer, string marketSymbol, uint256 strikePrice, uint256 expiry, address indexed collateralToken, uint256 premium);
+    event OptionBought(address indexed buyer, string marketSymbol, uint256 strikePrice, uint256 expiry, address indexed collateralToken, uint256 premium);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -68,34 +68,42 @@ contract OptionsEngine is
     /**
      * @dev Write an option. Locks margin in the vault.
      */
-    function writeOption(string memory marketSymbol, uint256 strikePrice, uint256 marginRequired, uint256 premiumWanted) external whenNotPaused nonReentrant {
+    function writeOption(address collateralToken, string memory marketSymbol, uint256 strikePrice, uint256 expiry, uint256 marginRequired, uint256 premiumWanted) external whenNotPaused nonReentrant {
+        require(vault.supportedTokens(collateralToken), "Token not supported");
+        require(expiry > block.timestamp, "Expiry must be in the future");
+
         // Lock margin in Vault (Vault will revert if user has insufficient unlocked collateral)
-        vault.lockMargin(msg.sender, marginRequired);
+        vault.lockMargin(msg.sender, collateralToken, marginRequired);
         
-        emit OptionWritten(msg.sender, marketSymbol, strikePrice, premiumWanted);
+        emit OptionWritten(msg.sender, marketSymbol, strikePrice, expiry, collateralToken, premiumWanted);
     }
 
     /**
      * @dev Buy an option. Pays premium to writer, deducts 2.5% fee.
-     * Note: Simplified representation. In production, this matches a specific order ID.
      */
-    function buyOption(address writer, string memory marketSymbol, uint256 strikePrice, uint256 premium) external whenNotPaused nonReentrant {
+    function buyOption(address writer, address collateralToken, string memory marketSymbol, uint256 strikePrice, uint256 expiry, uint256 premium) external whenNotPaused nonReentrant {
+        require(vault.supportedTokens(collateralToken), "Token not supported");
+        require(expiry > block.timestamp, "Cannot buy expired option");
+
         // Calculate fee
         uint256 fee = (premium * FEE_BPS) / BPS_DENOMINATOR;
         uint256 writerProceeds = premium - fee;
 
-        IERC20 usdc = vault.usdc();
         address treasury = vault.treasury();
 
         // Buyer pays the premium directly to the contract
-        usdc.safeTransferFrom(msg.sender, address(this), premium);
+        IERC20(collateralToken).safeTransferFrom(msg.sender, address(this), premium);
 
         // Send fee to Treasury
-        usdc.safeTransfer(treasury, fee);
+        if (fee > 0) {
+            IERC20(collateralToken).safeTransfer(treasury, fee);
+        }
         
         // Send proceeds to Writer
-        usdc.safeTransfer(writer, writerProceeds);
+        if (writerProceeds > 0) {
+            IERC20(collateralToken).safeTransfer(writer, writerProceeds);
+        }
         
-        emit OptionBought(msg.sender, marketSymbol, strikePrice, premium);
+        emit OptionBought(msg.sender, marketSymbol, strikePrice, expiry, collateralToken, premium);
     }
 }

@@ -7,8 +7,8 @@ import "../src/OptionsEngine.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
-contract MockUSDC is ERC20 {
-    constructor() ERC20("Mock USDC", "USDC") {}
+contract MockToken is ERC20 {
+    constructor(string memory name, string memory symbol) ERC20(name, symbol) {}
     function mint(address to, uint256 amount) external {
         _mint(to, amount);
     }
@@ -17,7 +17,8 @@ contract MockUSDC is ERC20 {
 contract OptionsEngineTest is Test {
     CitadelleVault vault;
     OptionsEngine engine;
-    MockUSDC usdc;
+    MockToken weth;
+    MockToken usdg;
 
     address admin = address(1);
     address treasury = address(2);
@@ -27,14 +28,19 @@ contract OptionsEngineTest is Test {
     function setUp() public {
         vm.startPrank(admin);
         
-        usdc = new MockUSDC();
+        weth = new MockToken("Mock WETH", "WETH");
+        usdg = new MockToken("Mock USDG", "USDG");
         
         CitadelleVault vaultImpl = new CitadelleVault();
         ERC1967Proxy vaultProxy = new ERC1967Proxy(
             address(vaultImpl),
-            abi.encodeWithSelector(CitadelleVault.initialize.selector, address(usdc), treasury)
+            abi.encodeWithSelector(CitadelleVault.initialize.selector, treasury)
         );
         vault = CitadelleVault(address(vaultProxy));
+
+        // Add supported tokens
+        vault.updateSupportedToken(address(weth), true);
+        vault.updateSupportedToken(address(usdg), true);
 
         OptionsEngine engineImpl = new OptionsEngine();
         ERC1967Proxy engineProxy = new ERC1967Proxy(
@@ -43,47 +49,57 @@ contract OptionsEngineTest is Test {
         );
         engine = OptionsEngine(address(engineProxy));
 
+        // Link Engine to Vault
+        vault.setEngine(address(engine));
+
         vm.stopPrank();
 
         // Setup balances
-        usdc.mint(writer, 10000e6); // 10k USDC
-        usdc.mint(buyer, 10000e6);
-    }
-
-    function testDepositAndWriteOption() public {
-        vm.startPrank(writer);
-        usdc.approve(address(vault), 1000e6);
-        vault.depositCollateral(1000e6);
-
-        // Expect 1000 USDC in vault for writer
-        assertEq(vault.collateralBalances(writer), 1000e6);
-
-        // Write an option (requires 500 margin, wants 50 premium)
-        engine.writeOption("AAPL", 150e6, 500e6, 50e6);
+        weth.mint(writer, 10000e18);
+        weth.mint(buyer, 10000e18);
         
-        assertEq(vault.lockedMargins(writer), 500e6);
+        usdg.mint(writer, 10000e6);
+        usdg.mint(buyer, 10000e6);
+    }
+
+    function testDepositAndWriteOptionWETH() public {
+        vm.startPrank(writer);
+        weth.approve(address(vault), 1000e18);
+        vault.depositCollateral(address(weth), 1000e18);
+
+        // Expect 1000 WETH in vault for writer
+        assertEq(vault.collateralBalances(writer, address(weth)), 1000e18);
+
+        // Write an option (expiry in 7 days)
+        uint256 expiry = block.timestamp + 7 days;
+        engine.writeOption(address(weth), "AAPL", 150e6, expiry, 500e18, 50e18);
+        
+        assertEq(vault.lockedMargins(writer, address(weth)), 500e18);
         vm.stopPrank();
     }
 
-    function testBuyOption() public {
-        // First writer writes the option
+    function testBuyOptionUSDG() public {
+        // Writer writes option with USDG collateral
         vm.startPrank(writer);
-        usdc.approve(address(vault), 1000e6);
-        vault.depositCollateral(1000e6);
-        engine.writeOption("AAPL", 150e6, 500e6, 50e6);
+        usdg.approve(address(vault), 1000e6);
+        vault.depositCollateral(address(usdg), 1000e6);
+        
+        uint256 expiry = block.timestamp + 7 days;
+        engine.writeOption(address(usdg), "MSFT", 300e6, expiry, 500e6, 20e6);
         vm.stopPrank();
 
-        // Now buyer buys it for 50 USDC premium
+        // Buyer buys the option
         vm.startPrank(buyer);
-        usdc.approve(address(engine), 50e6);
-        
-        engine.buyOption(writer, "AAPL", 150e6, 50e6);
+        usdg.approve(address(engine), 20e6); // Premium is 20 USDG
+        engine.buyOption(writer, address(usdg), "MSFT", 300e6, expiry, 20e6);
         vm.stopPrank();
 
-        // Fee is 2.5% of 50 = 1.25 USDC
-        assertEq(usdc.balanceOf(treasury), 1250000); // 1.25 * 1e6
-        
-        // Writer gets 48.75 USDC
-        assertEq(usdc.balanceOf(writer), 10000e6 - 1000e6 + 48750000);
+        // Verify fees
+        // 2.5% of 20 = 0.5 USDG
+        assertEq(usdg.balanceOf(treasury), 500000); 
+        // Writer gets 19.5 USDG
+        // Writer starting balance: 10000 - 1000 (deposited) = 9000
+        // Writer proceeds: 19.5 => 9019.5 USDG
+        assertEq(usdg.balanceOf(writer), 9019500000);
     }
 }

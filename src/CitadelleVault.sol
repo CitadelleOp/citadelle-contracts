@@ -11,7 +11,7 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 
 /**
  * @title CitadelleVault
- * @dev Manages user collateral (USDC) for trading on Citadelle Options.
+ * @dev Manages user collateral (WETH, USDG, etc.) for trading on Citadelle Options.
  * Uses UUPS Upgradeability and Ownable for Access Control.
  */
 contract CitadelleVault is 
@@ -23,34 +23,35 @@ contract CitadelleVault is
 {
     using SafeERC20 for IERC20;
 
-    IERC20 public usdc;
     address public treasury;
+    address public engine;
 
-    // user => balance
-    mapping(address => uint256) public collateralBalances;
+    // token => isSupported
+    mapping(address => bool) public supportedTokens;
 
-    // user => locked margin (for open positions)
-    mapping(address => uint256) public lockedMargins;
+    // user => token => balance
+    mapping(address => mapping(address => uint256)) public collateralBalances;
 
-    event CollateralDeposited(address indexed user, uint256 amount);
-    event CollateralWithdrawn(address indexed user, uint256 amount);
-    event MarginLocked(address indexed user, uint256 amount);
-    event MarginUnlocked(address indexed user, uint256 amount);
-    event FeeCollected(uint256 amount);
+    // user => token => locked margin (for open positions)
+    mapping(address => mapping(address => uint256)) public lockedMargins;
+
+    event TokenSupportUpdated(address indexed token, bool isSupported);
+    event CollateralDeposited(address indexed user, address indexed token, uint256 amount);
+    event CollateralWithdrawn(address indexed user, address indexed token, uint256 amount);
+    event MarginLocked(address indexed user, address indexed token, uint256 amount);
+    event MarginUnlocked(address indexed user, address indexed token, uint256 amount);
+    event FeeCollected(address indexed token, uint256 amount);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
-    function initialize(address _usdc, address _treasury) public initializer {
+    function initialize(address _treasury) public initializer {
         __Ownable_init(msg.sender);
         __Pausable_init();
 
-        require(_usdc != address(0), "Invalid USDC address");
         require(_treasury != address(0), "Invalid Treasury address");
-
-        usdc = IERC20(_usdc);
         treasury = _treasury;
     }
 
@@ -69,44 +70,61 @@ contract CitadelleVault is
         treasury = _treasury;
     }
 
-    function depositCollateral(uint256 amount) external whenNotPaused nonReentrant {
-        require(amount > 0, "Deposit must be > 0");
-        usdc.safeTransferFrom(msg.sender, address(this), amount);
-        collateralBalances[msg.sender] += amount;
-        emit CollateralDeposited(msg.sender, amount);
+    function setEngine(address _engine) external onlyOwner {
+        require(_engine != address(0), "Invalid Engine address");
+        engine = _engine;
     }
 
-    function withdrawCollateral(uint256 amount) external whenNotPaused nonReentrant {
+    function updateSupportedToken(address token, bool isSupported) external onlyOwner {
+        require(token != address(0), "Invalid token address");
+        supportedTokens[token] = isSupported;
+        emit TokenSupportUpdated(token, isSupported);
+    }
+
+    function depositCollateral(address token, uint256 amount) external whenNotPaused nonReentrant {
+        require(supportedTokens[token], "Token not supported");
+        require(amount > 0, "Deposit must be > 0");
+        
+        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        collateralBalances[msg.sender][token] += amount;
+        
+        emit CollateralDeposited(msg.sender, token, amount);
+    }
+
+    function withdrawCollateral(address token, uint256 amount) external whenNotPaused nonReentrant {
         require(amount > 0, "Withdraw must be > 0");
-        uint256 availableBalance = collateralBalances[msg.sender] - lockedMargins[msg.sender];
+        uint256 availableBalance = collateralBalances[msg.sender][token] - lockedMargins[msg.sender][token];
         require(availableBalance >= amount, "Insufficient available collateral");
 
-        collateralBalances[msg.sender] -= amount;
-        usdc.safeTransfer(msg.sender, amount);
-        emit CollateralWithdrawn(msg.sender, amount);
+        collateralBalances[msg.sender][token] -= amount;
+        IERC20(token).safeTransfer(msg.sender, amount);
+        
+        emit CollateralWithdrawn(msg.sender, token, amount);
     }
 
     // --- Internal/Engine functions ---
-    // In production, these should be restricted to OptionsEngine contract via access control
+    // Restricted to OptionsEngine contract via access control
     
-    function lockMargin(address user, uint256 amount) external whenNotPaused {
-        // TODO: Add strict access control (onlyEngine)
-        require(collateralBalances[user] - lockedMargins[user] >= amount, "Insufficient collateral to lock");
-        lockedMargins[user] += amount;
-        emit MarginLocked(user, amount);
+    modifier onlyEngine() {
+        require(msg.sender == engine, "CitadelleVault: Caller is not the Engine");
+        _;
     }
 
-    function unlockMargin(address user, uint256 amount) external {
-        // TODO: Add strict access control (onlyEngine)
-        require(lockedMargins[user] >= amount, "Unlock amount exceeds locked");
-        lockedMargins[user] -= amount;
-        emit MarginUnlocked(user, amount);
+    function lockMargin(address user, address token, uint256 amount) external whenNotPaused onlyEngine {
+        require(collateralBalances[user][token] - lockedMargins[user][token] >= amount, "Insufficient collateral to lock");
+        lockedMargins[user][token] += amount;
+        emit MarginLocked(user, token, amount);
     }
 
-    function transferFeeToTreasury(uint256 amount) external {
-        // TODO: Add strict access control (onlyEngine)
-        require(usdc.balanceOf(address(this)) >= amount, "Insufficient vault balance for fee");
-        usdc.safeTransfer(treasury, amount);
-        emit FeeCollected(amount);
+    function unlockMargin(address user, address token, uint256 amount) external onlyEngine {
+        require(lockedMargins[user][token] >= amount, "Unlock amount exceeds locked");
+        lockedMargins[user][token] -= amount;
+        emit MarginUnlocked(user, token, amount);
+    }
+
+    function transferFeeToTreasury(address token, uint256 amount) external onlyEngine {
+        require(IERC20(token).balanceOf(address(this)) >= amount, "Insufficient vault balance for fee");
+        IERC20(token).safeTransfer(treasury, amount);
+        emit FeeCollected(token, amount);
     }
 }
