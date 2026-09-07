@@ -26,3 +26,6 @@ deployer*.json
 *.key
 keystore/
 .DS_Store
+
+# Node Modules
+node_modules/

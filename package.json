@@ -1,0 +1,29 @@
+{
+  "name": "citadelle-contracts",
+  "version": "1.0.0",
+  "description": "Welcome to the **Citadelle Options** EVM Smart Contracts repository. This project is built using [Foundry](https://book.getfoundry.sh/) and contains the core on-chain logic for the Citadelle derivatives platform on the **Robinhood Chain**.",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CitadelleOp/citadelle-contracts.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/CitadelleOp/citadelle-contracts/issues"
+  },
+  "homepage": "https://github.com/CitadelleOp/citadelle-contracts#readme",
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.6.1",
+    "@openzeppelin/contracts-upgradeable": "^5.6.1",
+    "@pythnetwork/pyth-sdk-solidity": "^4.3.1"
+  }
+}

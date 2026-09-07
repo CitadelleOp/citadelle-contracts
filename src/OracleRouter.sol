@@ -1,24 +1,34 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "@pythnetwork/pyth-sdk-solidity/IPyth.sol";
+import "@pythnetwork/pyth-sdk-solidity/PythStructs.sol";
+
 /**
  * @title OracleRouter
- * @dev Routes price feeds for tokenized equities (e.g., NVDA, TSLA) to Citadelle Engines.
+ * @dev Production Oracle Router integrating with Pyth Network.
+ * Fetches real-time, real-world data directly from Pyth.
  */
 contract OracleRouter {
     
-    struct PriceData {
-        uint256 price;
-        uint256 timestamp;
-    }
-    
-    mapping(bytes32 => PriceData) public prices;
+    IPyth public pyth;
 
-    // TODO: Implement multi-oracle support, staleness checks, and emergency fallback.
-    function getPrice(bytes32 asset) external view returns (uint256 price, uint256 timestamp) {
-        PriceData memory data = prices[asset];
-        require(data.timestamp > 0, "Price not available");
-        // require(block.timestamp - data.timestamp <= MAX_STALENESS, "Stale price");
-        return (data.price, data.timestamp);
+    /**
+     * @param pythContract The actual address of the Pyth Network contract on Robinhood Chain/Testnet
+     */
+    constructor(address pythContract) {
+        require(pythContract != address(0), "Invalid Pyth address");
+        pyth = IPyth(pythContract);
+    }
+
+    /**
+     * @dev Fetches the latest price from Pyth Network.
+     * Note: getPriceUnsafe is used when off-chain systems are ensuring freshness,
+     * or you can use getPrice() if you intend to pass updateData via payable functions.
+     * @param priceFeedId The Pyth price feed ID (e.g. AAPL/USD feed ID)
+     */
+    function getLatestPrice(bytes32 priceFeedId) external view returns (int64 price, uint64 conf, int32 expo, uint256 publishTime) {
+        PythStructs.Price memory pythPrice = pyth.getPriceUnsafe(priceFeedId);
+        return (pythPrice.price, pythPrice.conf, pythPrice.expo, pythPrice.publishTime);
     }
 }
