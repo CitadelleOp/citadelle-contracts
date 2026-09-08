@@ -8,6 +8,8 @@ import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/Pau
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 // Interfaces
 interface ICitadelleVault {
@@ -36,9 +38,15 @@ contract OptionsEngine is
     uint256 public constant FEE_BPS = 250;
     uint256 public constant BPS_DENOMINATOR = 10000;
 
+    // --- V2 Storage ---
+    address public backendSigner;
+    mapping(string => bool) public isPositionClosed;
+
     // --- Events ---
     event OptionWritten(address indexed writer, string marketSymbol, uint256 strikePrice, uint256 expiry, address indexed collateralToken, uint256 premium);
     event OptionBought(address indexed buyer, string marketSymbol, uint256 strikePrice, uint256 expiry, address indexed collateralToken, uint256 premium);
+    event OptionClosed(address indexed user, string positionId, address indexed collateralToken, uint256 marginUnlocked);
+    event BackendSignerUpdated(address oldSigner, address newSigner);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -105,5 +113,35 @@ contract OptionsEngine is
         }
         
         emit OptionBought(msg.sender, marketSymbol, strikePrice, expiry, collateralToken, premium);
+    }
+
+    function setBackendSigner(address _signer) external onlyOwner {
+        require(_signer != address(0), "Invalid signer address");
+        emit BackendSignerUpdated(backendSigner, _signer);
+        backendSigner = _signer;
+    }
+
+    /**
+     * @dev Close a position (reclaim margin) securely via backend signature.
+     */
+    function closeOption(
+        string memory positionId,
+        address collateralToken, 
+        uint256 marginToUnlock, 
+        bytes memory signature
+    ) external whenNotPaused nonReentrant {
+        require(!isPositionClosed[positionId], "Position already closed");
+        require(backendSigner != address(0), "Backend signer not set");
+        
+        // Verify ECDSA Signature
+        bytes32 messageHash = keccak256(abi.encodePacked(msg.sender, positionId, collateralToken, marginToUnlock));
+        bytes32 ethSignedMessageHash = MessageHashUtils.toEthSignedMessageHash(messageHash);
+        address signer = ECDSA.recover(ethSignedMessageHash, signature);
+        require(signer == backendSigner, "Invalid backend signature");
+
+        isPositionClosed[positionId] = true;
+        vault.unlockMargin(msg.sender, collateralToken, marginToUnlock);
+        
+        emit OptionClosed(msg.sender, positionId, collateralToken, marginToUnlock);
     }
 }
